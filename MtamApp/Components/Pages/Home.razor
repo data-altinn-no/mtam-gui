@@ -1,0 +1,150 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using System.Text
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using Microsoft.Extensions.Options
+@using MtamApp.Config
+
+<PageTitle>Home</PageTitle>
+
+<h1>Melding til annen myndighet - Digdir</h1>
+
+<h5>Mottaker</h5>
+<input placeholder="mottaker" @bind="@recipient"/>
+<br/>
+
+<h5>Om Enhet</h5>
+<input placeholder="om enhet" @bind="@subject"/>
+<br/>
+
+<h5>Meldingstype</h5>
+<select @bind="@messageType">
+    <option value="varsel-om-rapport">Rapport</option>
+    <option value="varsel-om-koordinering">Koordinering</option>
+    <option value="varsel-fritekst">Fritekst</option>
+</select>
+<br/>
+
+<h5>Fritekst</h5>
+<input placeholder="fritekst" @bind="@freeText"/>
+<br/>
+
+<button @onclick="SendMessage">Lagre</button>
+
+<button @onclick="Refresh">Refresh</button>
+<h5>Meldinger sendt</h5>
+@foreach (var message in createdMessages)
+{
+<li>@message</li>
+}
+<br/>
+<h5>Meldinger mottatt</h5>
+@foreach (var receivedEvent in receivedEvents)
+{
+<li>@receivedEvent</li>
+}
+@code {
+    private string? recipient;
+    private string? subject;
+    private string? messageType = "varsel-om-rapport";
+    private string? freeText;
+    
+    [Inject]
+    public IOptions<Settings>? AppSettings { get; set; }
+
+    private HttpClient _httpClient = new HttpClient();
+
+    // I dont really like dynamic, but it's just less of a pain for a poc. Use proper serialisation if this for
+    // some reason is ever made into a proper projct
+    private List<dynamic> createdMessages = [];
+    private List<dynamic> receivedEvents = [];
+
+    private async Task Refresh()
+    {
+        await GetMessages();
+        await GetEvents();
+    }
+    
+    private async Task<List<dynamic>> GetMessages()
+    {
+        var url = $"{AppSettings.Value.Url}/api/mtam?code={AppSettings.Value.Code}";
+        var response = await _httpClient.GetAsync(url);
+        var body = await response.Content.ReadAsStringAsync();
+        var mtams = JsonSerializer.Deserialize<List<dynamic>>(body).ToList();
+        createdMessages = mtams;
+        return mtams;
+    }
+
+    private async Task<List<dynamic>> GetEvents()
+    {
+        var url = $"{AppSettings.Value.Url}/api/cloudevents?code={AppSettings.Value.Code}";
+        var response = await _httpClient.GetAsync(url);
+        var body = await response.Content.ReadAsStringAsync();
+        var events = JsonSerializer.Deserialize<List<dynamic>>(body).ToList();
+        receivedEvents = events;
+        return events;
+    }
+    
+    private async Task SendMessage()
+    {
+        var url = $"{AppSettings.Value.Url}/api/mtam/create?code={AppSettings.Value.Code}";
+        var message = CreateMessage();
+        var body = JsonSerializer.Serialize(message);
+        var content = new StringContent(body, Encoding.UTF8, "application/json");
+        await _httpClient.PostAsync(url, content);
+            
+        subject = string.Empty;
+        recipient = string.Empty;
+        freeText = string.Empty;
+
+        createdMessages = await GetMessages();
+    }
+    
+    private MtamSourceMessage CreateMessage()
+    {
+        var message = new MtamSourceMessage
+        {
+            Id = Guid.NewGuid().ToString(),
+            Timestamp = DateTime.UtcNow,
+            Recipient = recipient,
+            Subject = subject,
+            MessageContent = new MtamSourceMessageContent()
+            {
+                FreeText = freeText,
+                MessageType = messageType
+            }
+        };
+        
+        return message;
+    }
+    
+    [Serializable]
+    public class MtamSourceMessage
+    {
+        [JsonPropertyName("identifikator")]
+        public string? Id { get; set; }
+
+        [JsonPropertyName("mottaker")]
+        public string? Recipient { get; set; }
+
+        [JsonPropertyName("meldingOmTildaenhet")]
+        public string? Subject { get; set; }
+
+        [JsonPropertyName("datoForMeldingTilAnnenMyndighet")]
+        public DateTime Timestamp { get; set; }
+
+        [JsonPropertyName("meldingsinnholdTilAnnenMyndighet")]
+        public MtamSourceMessageContent? MessageContent { get; set; }
+    }
+
+    [Serializable]
+    public class MtamSourceMessageContent
+    {
+        [JsonPropertyName("meldingsType")]
+        public string? MessageType { get; set; }
+
+        [JsonPropertyName("fritekst")]
+        public string? FreeText { get; set; }
+    }
+}
